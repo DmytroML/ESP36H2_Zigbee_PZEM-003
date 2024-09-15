@@ -22,6 +22,27 @@
 #include "freertos/task.h"
 #include "ha/esp_zigbee_ha_standard.h"
 
+
+
+#include "pzem003.h"
+
+/* @brief Set ESP32  Serial Configuration */
+pzem_setup_t pzConf =
+{
+    .pzem_uart   = UART_NUM_1,              /*  <== Specify the UART you want to use, UART_NUM_0, UART_NUM_1, UART_NUM_2 (ESP32 specific) */
+    .pzem_rx_pin = GPIO_NUM_4,             /*  <== GPIO for RX */
+    .pzem_tx_pin = GPIO_NUM_5,             /*  <== GPIO for TX */
+    .pzem_addr   = 0x01,      /*  If your module has a different address, specify here or update the variable in pzem004tv3.h */
+};
+
+///static const char * TAG = "APP_MAIN";
+TaskHandle_t PMonTHandle = NULL;
+_current_values_t pzValues;            /* Measured values */
+
+void PMonTask( void * pz );
+
+
+
 #if !defined ZB_ED_ROLE
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile sensor (End Device) source code.
 #endif
@@ -195,15 +216,39 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
+
+void PMonTask( void * pz )
+{
+    for( ;; )
+    {
+        PzemGetValues( &pzConf, &pzValues );
+        printf( "Vrms: %.2fV - Irms: %.2fA - P: %.1fW - E: %.1fWh\n", pzValues.voltage, pzValues.current, pzValues.power, pzValues.energy );
+        //printf( "Freq: %.1fHz - PF: %.2f\n", pzValues.frequency, pzValues.pf );
+
+        ESP_LOGI( TAG, "Stack High Water Mark: %ld Bytes free", ( unsigned long int ) uxTaskGetStackHighWaterMark( NULL ) );     /* Show's what's left of the specified stacksize */
+
+        vTaskDelay( pdMS_TO_TICKS( 2500 ) );
+    }
+
+    vTaskDelete( NULL );
+}
+
+
 void app_main(void)
 {
-    esp_zb_platform_config_t config = {
-        .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
-        .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
-    };
-    ESP_ERROR_CHECK(nvs_flash_init());
-    ESP_ERROR_CHECK(esp_zb_platform_config(&config));
+    /* Initialize/Configure UART */
+    PzemInit( &pzConf );
+
+
+    /////esp_zb_platform_config_t config = {
+    /////    .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
+    /////    .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
+    /////};
+    /////ESP_ERROR_CHECK(nvs_flash_init());
+    /////ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     /* Start Zigbee stack task */
-    xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
+    /////xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
+    xTaskCreate( PMonTask, "PowerMon", ( 256 * 8 ), NULL, tskIDLE_PRIORITY, &PMonTHandle );
+
 }
