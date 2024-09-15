@@ -11,7 +11,7 @@
  * software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
  * CONDITIONS OF ANY KIND, either express or implied.
  */
-#include "esp_zb_temperature_sensor.h"
+#include "esp_zb_DC_monitor.h"
 #include "temp_sensor_driver.h"
 #include "switch_driver.h"
 
@@ -79,6 +79,7 @@ static void esp_app_buttons_handler(switch_func_pair_t *button_func_pair)
 static void esp_app_temp_sensor_handler(float temperature)
 {
     int16_t measured_value = zb_temperature_to_s16(temperature);
+    
     /* Update temperature sensor measured value */
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(HA_ESP_SENSOR_ENDPOINT,
@@ -223,9 +224,10 @@ void PMonTask( void * pz )
     {
         PzemGetValues( &pzConf, &pzValues );
         printf( "Vrms: %.2fV - Irms: %.2fA - P: %.1fW - E: %.1fWh\n", pzValues.voltage, pzValues.current, pzValues.power, pzValues.energy );
+        //printf( "Vrms: %iV\n", measured_value);
         //printf( "Freq: %.1fHz - PF: %.2f\n", pzValues.frequency, pzValues.pf );
 
-        ESP_LOGI( TAG, "Stack High Water Mark: %ld Bytes free", ( unsigned long int ) uxTaskGetStackHighWaterMark( NULL ) );     /* Show's what's left of the specified stacksize */
+        //ESP_LOGI( TAG, "Stack High Water Mark: %ld Bytes free", ( unsigned long int ) uxTaskGetStackHighWaterMark( NULL ) );     /* Show's what's left of the specified stacksize */
 
         vTaskDelay( pdMS_TO_TICKS( 2500 ) );
     }
@@ -240,15 +242,15 @@ void app_main(void)
     PzemInit( &pzConf );
 
 
-    /////esp_zb_platform_config_t config = {
-    /////    .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
-    /////    .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
-    /////};
-    /////ESP_ERROR_CHECK(nvs_flash_init());
-    /////ESP_ERROR_CHECK(esp_zb_platform_config(&config));
+    esp_zb_platform_config_t config = {
+        .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
+        .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
+    };
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     /* Start Zigbee stack task */
-    /////xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
-    xTaskCreate( PMonTask, "PowerMon", ( 256 * 8 ), NULL, tskIDLE_PRIORITY, &PMonTHandle );
-
+    xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
+    //xTaskCreate( PMonTask, "PowerMon", ( 256 * 8 ), NULL, tskIDLE_PRIORITY, &PMonTHandle );
+    xTaskCreate( PMonTask, "PowerMon", 4096, NULL, 1, NULL);
 }
