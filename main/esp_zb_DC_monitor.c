@@ -21,10 +21,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ha/esp_zigbee_ha_standard.h"
-
-
-
 #include "pzem003.h"
+#include "esp_timer.h"
+
+
+#if !defined ZB_ED_ROLE
+#error Define ZB_ED_ROLE in idf.py menuconfig to compile sensor (End Device) source code.
+#endif
 
 /* @brief Set ESP32  Serial Configuration */
 pzem_setup_t pzConf =
@@ -43,11 +46,15 @@ void PMonTask( void * pz );
 
 
 
-#if !defined ZB_ED_ROLE
-#error Define ZB_ED_ROLE in idf.py menuconfig to compile sensor (End Device) source code.
-#endif
 
-static const char *TAG = "ESP_ZB_SENSOR";
+
+uint16_t RMSVOLTAGE= 0; //!< Represents the most recent RMS voltage reading in @e Volts (V). 
+uint16_t RMSCURRENT= 0; //!< Represents the most recent RMS current reading in @e Amps (A). 
+int16_t ACTIVE_POWER= 0;  //!< Represents the single phase or Phase A, current demand of active power delivered or received at the premises, in @e Watts (W). 
+
+
+
+static const char *TAG = "ESP_ZB_TEMP_SENSOR";
 
 static int16_t zb_temperature_to_s16(float temp)
 {
@@ -79,12 +86,27 @@ static void esp_app_buttons_handler(switch_func_pair_t *button_func_pair)
 static void esp_app_temp_sensor_handler(float temperature)
 {
     int16_t measured_value = zb_temperature_to_s16(temperature);
-    
     /* Update temperature sensor measured value */
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(HA_ESP_SENSOR_ENDPOINT,
         ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
         ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID, &measured_value, false);
+    ESP_EARLY_LOGI(TAG, "!!!!!!!!!!!!!");
+
+
+    esp_zb_zcl_set_attribute_val(HA_ESP_SENSOR_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_ELECTRICAL_MEASUREMENT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMSVOLTAGE_ID, &RMSVOLTAGE, false);
+
+    esp_zb_zcl_set_attribute_val(HA_ESP_SENSOR_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_ELECTRICAL_MEASUREMENT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMSCURRENT_ID, &RMSCURRENT, false); 
+ 
+    esp_zb_zcl_set_attribute_val(HA_ESP_SENSOR_ENDPOINT,
+        ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACTIVE_POWER_ID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMSCURRENT_ID, &ACTIVE_POWER, false); 
+
+
     esp_zb_lock_release();
 }
 
@@ -96,12 +118,13 @@ static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask)
 
 static esp_err_t deferred_driver_init(void)
 {
-    temperature_sensor_config_t temp_sensor_config =
-        TEMPERATURE_SENSOR_CONFIG_DEFAULT(ESP_TEMP_SENSOR_MIN_VALUE, ESP_TEMP_SENSOR_MAX_VALUE);
+    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(ESP_TEMP_SENSOR_MIN_VALUE, ESP_TEMP_SENSOR_MAX_VALUE);
     ESP_RETURN_ON_ERROR(temp_sensor_driver_init(&temp_sensor_config, ESP_TEMP_SENSOR_UPDATE_INTERVAL, esp_app_temp_sensor_handler), TAG,
                         "Failed to initialize temperature sensor");
     ESP_RETURN_ON_FALSE(switch_driver_init(button_func_pair, PAIR_SIZE(button_func_pair), esp_app_buttons_handler), ESP_FAIL, TAG,
                         "Failed to initialize switch driver");
+
+    /* Initialize/Configure UART */                   
     return ESP_OK;
 }
 
@@ -151,12 +174,84 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     }
 }
 
+static esp_zb_cluster_list_t *custom_clusters_create(esp_zb_temperature_sensor_cfg_t *temperature_sensor)
+{
+    esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(&(temperature_sensor->basic_cfg));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, MANUFACTURER_NAME));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, MODEL_IDENTIFIER));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(cluster_list, esp_zb_identify_cluster_create(&(temperature_sensor->identify_cfg)), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_temperature_meas_cluster(cluster_list, esp_zb_temperature_meas_cluster_create(&(temperature_sensor->temp_meas_cfg)), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    
 
 
+    esp_zb_attribute_list_t *esp_zb_PZEM_003 = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ELECTRICAL_MEASUREMENT);
+  
+    //uint8_t e_meas_type;
+    //e_meas_type=0x06; 
+    //esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_MEASUREMENT_TYPE_ID,&e_meas_type);
 
+    uint16_t undefined;
+    undefined = 0x0000;
+
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMSVOLTAGE_ID, &undefined);         /*!< Represents the most recent RMS voltage reading in @e Volts (V). */
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMS_VOLTAGE_MIN_ID, &undefined);   /*!< Represents the lowest RMS voltage value measured in Volts (V). */
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMS_VOLTAGE_MAX_ID , &undefined);   /*!< Represents the highest RMS voltage value measured in Volts (V). */
+
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMSCURRENT_ID, &undefined);         /*!< Represents the most recent RMS voltage reading in @e Volts (V). */
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMS_CURRENT_MIN_ID, &undefined);   /*!< Represents the lowest RMS voltage value measured in Volts (V). */
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_RMS_CURRENT_MAX_ID , &undefined);   /*!< Represents the highest RMS voltage value measured in Volts (V). */
+    
+
+    int16_t undefined_ap;
+    undefined_ap = 0x0000; 
+
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACTIVE_POWER_ID  , &undefined_ap);     /*!< Represents the single phase or Phase A, current demand of active power delivered or received at the premises, in @e Watts (W). */
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACTIVE_POWER_MIN_ID , &undefined_ap);  /*!< Represents the lowest AC power value measured in Watts (W). */
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACTIVE_POWER_MAX_ID  , &undefined_ap); /*!< Represents the highest AC power value measured in Watts (W). */
+ 
+    /* AC Formatting */
+    uint16_t u_value =  (uint16_t)(1);
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACCURRENT_MULTIPLIER_ID, &u_value);     //!< Provides a value to be multiplied against the @e InstantaneousCurrent and @e RMSCurrent attributes 
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACPOWER_MULTIPLIER_ID, &u_value);
+    uint16_t u_value_1000 = (uint16_t)(1000); 
+    //esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_004t_1_cluster,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACCURRENT_DIVISOR_ID,&u_value_1000);    //!< Provides a value to be divided against the @e ACCurrent, @e InstantaneousCurrent and @e RMSCurrent attributes. 
+    esp_zb_electrical_meas_cluster_add_attr(esp_zb_PZEM_003,ESP_ZB_ZCL_ATTR_ELECTRICAL_MEASUREMENT_ACPOWER_DIVISOR_ID,&u_value_1000);
+    
+
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_electrical_meas_cluster(cluster_list, esp_zb_PZEM_003, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));     
+    
+    
+    
+    
+    
+    return cluster_list;
+}
+
+static esp_zb_ep_list_t *custom_temperature_sensor_ep_create(uint8_t endpoint_id, esp_zb_temperature_sensor_cfg_t *temperature_sensor)
+{
+    esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
+    esp_zb_endpoint_config_t endpoint_config = {
+        .endpoint = endpoint_id,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_TEMPERATURE_SENSOR_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(ep_list, custom_clusters_create(temperature_sensor), endpoint_config);
+    return ep_list;
+}
 
 static void esp_zb_task(void *pvParameters)
 {
+
+
+
+
+
+
+
     /* Initialize Zigbee stack */
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
@@ -166,39 +261,7 @@ static void esp_zb_task(void *pvParameters)
     /* Set (Min|Max)MeasuredValure */
     sensor_cfg.temp_meas_cfg.min_value = zb_temperature_to_s16(ESP_TEMP_SENSOR_MIN_VALUE);
     sensor_cfg.temp_meas_cfg.max_value = zb_temperature_to_s16(ESP_TEMP_SENSOR_MAX_VALUE);
-    
-
-
-  //  esp_zb_ep_list_t *esp_zb_sensor_ep = custom_temperature_sensor_ep_create(HA_ESP_SENSOR_ENDPOINT, &sensor_cfg);
-
-///--------------------------------------------------
-    esp_zb_ep_list_t *esp_zb_sensor_ep = esp_zb_ep_list_create();
-    esp_zb_endpoint_config_t endpoint_config = {
-        .endpoint = HA_ESP_SENSOR_ENDPOINT,
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id = ESP_ZB_HA_TEMPERATURE_SENSOR_DEVICE_ID,
-        .app_device_version = 0
-    };
-
-
-   esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
-    esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(&(sensor_cfg.basic_cfg));
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, MANUFACTURER_NAME));
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, MODEL_IDENTIFIER));
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(cluster_list, esp_zb_identify_cluster_create(&(sensor_cfg.identify_cfg)), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_temperature_meas_cluster(cluster_list, esp_zb_temperature_meas_cluster_create(&(sensor_cfg.temp_meas_cfg)), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-
-
-    esp_zb_ep_list_add_ep(esp_zb_sensor_ep, cluster_list, endpoint_config);
-
-
-///--------------------------------------------------
-
-
-
-
+    esp_zb_ep_list_t *esp_zb_sensor_ep = custom_temperature_sensor_ep_create(HA_ESP_SENSOR_ENDPOINT, &sensor_cfg);
 
     /* Register the device */
     esp_zb_device_register(esp_zb_sensor_ep);
@@ -224,7 +287,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     ESP_ERROR_CHECK(esp_zb_start(false));
 
-    esp_zb_stack_main_loop();
+    esp_zb_main_loop_iteration();
 }
 
 
@@ -233,24 +296,21 @@ void PMonTask( void * pz )
     for( ;; )
     {
         PzemGetValues( &pzConf, &pzValues );
-        printf( "Vrms: %.2fV - Irms: %.2fA - P: %.1fW - E: %.1fWh\n", pzValues.voltage, pzValues.current, pzValues.power, pzValues.energy );
-        //printf( "Vrms: %iV\n", measured_value);
-        //printf( "Freq: %.1fHz - PF: %.2f\n", pzValues.frequency, pzValues.pf );
-
+        //printf( "Vrms: %.2fV - Irms: %.2fA - P: %.1fW - E: %.1fWh\n", pzValues.voltage, pzValues.current, pzValues.power, pzValues.energy );
+        printf( "Vrms: %.2fV - Irms: %.2fA - P: %.1fW - E: %.1fWh\n", pzValues.voltage, pzValues.current, pzValues.power, random()*1.1);
         //ESP_LOGI( TAG, "Stack High Water Mark: %ld Bytes free", ( unsigned long int ) uxTaskGetStackHighWaterMark( NULL ) );     /* Show's what's left of the specified stacksize */
 
         vTaskDelay( pdMS_TO_TICKS( 2500 ) );
     }
 
+
+
+
     vTaskDelete( NULL );
 }
-
-
 void app_main(void)
 {
-    /* Initialize/Configure UART */
-    PzemInit( &pzConf );
-
+    PzemInit( &pzConf ); 
 
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
@@ -260,7 +320,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     /* Start Zigbee stack task */
-    xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
-    //xTaskCreate( PMonTask, "PowerMon", ( 256 * 8 ), NULL, tskIDLE_PRIORITY, &PMonTHandle );
-    xTaskCreate( PMonTask, "PowerMon", 4096, NULL, 1, NULL);
+    //xTaskCreate( PMonTask, "PowerMon", 4096, NULL, 1, NULL);
+    xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 1, NULL);
+    xTaskCreate(PMonTask, "PowerMon", 4096, NULL, 5, NULL);
 }
