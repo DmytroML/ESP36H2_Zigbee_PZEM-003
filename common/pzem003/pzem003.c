@@ -189,7 +189,7 @@ bool PzemGetValues( pzem_setup_t *pzSetup, _current_values_t *pmonValues )
 
     /* Read response from the sensor, if everything goes well we retreived 25 Bytes */
     if ( PzemReceive( pzSetup, respbuff, RESP_BUF_SIZE ) != RESP_BUF_SIZE ) { /* Something went wrong */
-        ESP_LOGE(LOG_TAG, "Error RESP_BUF_SIZE !!");
+        //////////ESP_LOGE(LOG_TAG, "Error RESP_BUF_SIZE !!");
         return false;
     }
 
